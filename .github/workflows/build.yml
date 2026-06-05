@@ -1,0 +1,47 @@
+name: Build 360T7 Firmware
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 200
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential git libncurses-dev gawk unzip file wget
+
+    - name: Clone source
+      run: |
+        git clone -b openwrt-24.10 https://github.com/padavanonly/immortalwrt-mt798x-6.6.git openwrt
+
+    - name: Update feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Configure for 360T7
+      run: |
+        cd openwrt
+        echo 'CONFIG_TARGET_mediatek=y' >> .config
+        echo 'CONFIG_TARGET_mediatek_mt7981=y' >> .config
+        echo 'CONFIG_TARGET_mediatek_mt7981_DEVICE_qihoo_360t7=y' >> .config
+        make defconfig
+
+    - name: Build
+      run: |
+        cd openwrt
+        make -j$(nproc)
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: 360t7-firmware
+        path: openwrt/bin/targets/**/*sysupgrade.bin
