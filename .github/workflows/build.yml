@@ -1,4 +1,4 @@
-name: Build 360T7 Firmware
+name: Build PadavanOnly 360T7 (Kernel 6.6)
 
 on:
   workflow_dispatch:
@@ -6,20 +6,17 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 200
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
 
     steps:
-    - name: Checkout
+    - name: Checkout source code
       uses: actions/checkout@v4
 
-    - name: Install dependencies
+    - name: Clone PadavanOnly Kernel 6.6 repository
       run: |
-        sudo apt update
-        sudo apt install -y build-essential git libncurses-dev gawk unzip file wget
-
-    - name: Clone source
-      run: |
-        git clone -b openwrt-24.10 https://github.com/padavanonly/immortalwrt-mt798x-6.6.git openwrt
+        git clone --depth=1 -b mt798x-mt799x-6.6-mtwifi https://github.com/padavanonly/immortalwrt-mt798x-6.6.git openwrt
 
     - name: Update feeds
       run: |
@@ -27,21 +24,78 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Configure for 360T7
+    - name: Copy base config for MT7981
       run: |
         cd openwrt
-        echo 'CONFIG_TARGET_mediatek=y' >> .config
-        echo 'CONFIG_TARGET_mediatek_mt7981=y' >> .config
-        echo 'CONFIG_TARGET_mediatek_mt7981_DEVICE_qihoo_360t7=y' >> .config
+        cp -f defconfig/mt7981-ax3000.config .config
+
+    - name: Apply MediaTek WiFi config (mtwifi closed source)
+      run: |
+        cd openwrt
+        echo "CONFIG_PACKAGE_luci-app-mtk=y" >> .config
+        echo "CONFIG_MTK_MTWIFI=y" >> .config
+        echo "# CONFIG_PACKAGE_mtwifi-cfg is not set" >> .config
+
+    - name: Fix known issues for kernel 6.6
+      run: |
+        cd openwrt
+        echo "# CONFIG_PACKAGE_kmod-ipt-offload is not set" >> .config
+        echo "# CONFIG_PACKAGE_shortcut-fe is not set" >> .config
+        echo "CONFIG_MTK_HNAT_PPE_THRESHOLD=30" >> .config
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: openwrt/.ccache
+        key: ccache-padavanonly-k6.6-${{ github.run_id }}
+        restore-keys: |
+          ccache-padavanonly-k6.6-
+
+    - name: Download all sources
+      run: |
+        cd openwrt
         make defconfig
+        make download -j8
 
-    - name: Build
+    - name: Build firmware
       run: |
         cd openwrt
-        make -j$(nproc)
+        make -j$(nproc) V=s
 
-    - name: Upload
+    - name: Upload firmware artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: 360t7-firmware
-        path: openwrt/bin/targets/**/*sysupgrade.bin
+        name: padavanonly-k6.6-360t7
+        path: openwrt/bin/targets/mediatek/mt7981/
+        retention-days: 7
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-22.04
+    needs: build
+    if: success() && !cancelled()
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Extract 360T7 files only
+      run: |
+        mkdir release_files
+        find artifacts -type f \( -name "*360t7*" -o -name "*qihoo*" \) -exec cp {} release_files/ \;
+        echo "✅ Files found for release:"
+        ls -la release_files/ || echo "⚠️ No 360T7 files found"
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: PadavanOnly-360T7-Kernel6.6-Build-${{ github.run_number }}
+        tag_name: padavanonly-k6.6-${{ github.run_number }}
+        files: release_files/*
+        fail_on_unmatched_files: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
